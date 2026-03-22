@@ -1,0 +1,95 @@
+{
+    "data_path": "../deep_learning_for_crypto/datasets/btc_panel_v6.npz",
+    "output_dir": "./checkpoints",
+    "figure_dir": "./outputs",
+
+    "lookback": 8,
+    "train_ratio": 0.70,
+    "valid_ratio": 0.15,
+    "train_start_week": null,
+    "trump_feature_indices": [44, 45, 46, 47, 48],
+
+    "model_type": "tft",
+    "hidden_dim": 64,
+    "num_heads": 2,
+    "lstm_layers": 1,
+    "cs_gated_layers": 3,
+    "dropout": 0.30,
+
+    "learning_rate": 0.001,
+    "weight_decay": 1e-4,
+    "batch_size": 128,
+    "epochs": 150,
+    "early_stopping_patience": 20,
+    "lr_scheduler_patience": 10,
+    "lr_scheduler_factor": 0.5,
+    "warmup_epochs": 10,
+    "ranking_temperature": 1.0,
+    "grad_accum_steps": 4,
+
+    "num_seeds": 32,
+    "tree_ensemble_seeds": 5,
+
+    "traditional_models": {
+        "ols": {},
+        "elasticnet": {
+            "alpha": [0.001, 0.01, 0.1, 1.0],
+            "l1_ratio": [0.1, 0.5, 0.9, 1.0]
+        },
+        "pca_regression": {
+            "n_components": [1, 2, 3, 5]
+        },
+        "pls": {
+            "n_components": [1, 2, 3, 5]
+        },
+        "random_forest": {
+            "max_depth": [1, 2, 3, 5],
+            "max_features": ["sqrt", 0.33, 0.5],
+            "n_estimators": 300
+        },
+        "gradient_boosting": {
+            "max_depth": [1, 2],
+            "learning_rate": [0.01, 0.1],
+            "n_estimators": [100, 300]
+        }
+    },
+
+    "feature_configs": {
+        "Price+Technical": [0,1,2,3,4,5,6,7,8,9,10],
+        "+Onchain":        [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15],
+        "All":             [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
+                            16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32],
+        "+Trump":          [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
+                            16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,
+                            44,45,46,47,48],
+        "+ETF":            [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
+                            16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,
+                            49,50,51,52],
+        "+Trump+ETF":      [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
+                            16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,
+                            44,45,46,47,48,49,50,51,52]
+    },
+
+    "_feature_names": [
+        "r1w","r4w","r12w","r26w","r52w",
+        "rsi_14","bb_pct","vol_ratio","atr_pct","obv_change","vol_usd",
+        "active_addr","tx_count","nvt","exchange_net_flow","mvrv",
+        "fear_greed","spx_ret","dxy_ret","vix","gold_ret","silver_ret",
+        "dji_ret","spx_vol_chg","gold_vol_chg","silver_vol_chg","dji_vol_chg",
+        "btc_etf_inflow_norm","polymarket_btc","btc_etf_inflow_raw",
+        "eth_etf_inflow_norm","eth_etf_inflow_raw","btc_etf_vol",
+        "trump_post_count","trump_caps_ratio","trump_tariff_score",
+        "trump_crypto_score","trump_sentiment",
+        "btc_etf_gbtc","btc_etf_excl_gbtc","eth_etf_ethe","eth_etf_excl_ethe"
+    ],
+
+    "_v6_changes": {
+        "listnet_targets": "raw returns → cross-sectional rank percentiles [0,1]",
+        "grad_accum_steps": "new: 4 (effective batch = 86×4 = 344 assets)",
+        "cs_gated_layers": "new model: CrossSectionalGatedNet (cs_gated, 3 GRN layers)",
+        "vsn": "LightVSN → VariableSelectionNetwork (shared per-var GRN, ~27K params)",
+        "new_features": "added btc_etf_gbtc, btc_etf_excl_gbtc, eth_etf_ethe, eth_etf_excl_ethe (indices 49-52)",
+        "new_feature_configs": "added +ETF and +Trump+ETF configs",
+        "data_path": "btc_panel.npz → btc_panel_v6.npz (run prepare_panel_v6.py first)"
+    }
+}
