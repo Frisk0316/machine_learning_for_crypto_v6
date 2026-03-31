@@ -51,6 +51,85 @@ def load_results(npz_path, feat_configs):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Statistical inference helpers
+# ═══════════════════════════════════════════════════════════════════════
+
+def newey_west_tstat(returns, max_lag=None):
+    """
+    Newey-West HAC t-statistic for mean weekly return != 0.
+
+    Corrects for autocorrelation in portfolio returns using the Bartlett
+    kernel. Bandwidth follows the data-driven rule in Newey & West (1994):
+    max_lag = max(1, floor(4 * (T/100)^{2/9})).
+
+    Parameters
+    ----------
+    returns : array (T,) — weekly long-short returns
+    max_lag : int or None — HAC bandwidth (None = data-driven)
+
+    Returns
+    -------
+    t_nw : float — NW-corrected t-statistic
+    se_nw : float — NW standard error of the mean
+    """
+    T = len(returns)
+    if T < 4:
+        return 0.0, 1e-10
+    if max_lag is None:
+        max_lag = max(1, int(4 * (T / 100) ** (2 / 9)))
+    mu = returns.mean()
+    e = returns - mu
+    # Newey-West HAC variance with Bartlett kernel
+    gamma_0 = np.dot(e, e) / T
+    nw_var = gamma_0
+    for j in range(1, max_lag + 1):
+        gamma_j = np.dot(e[j:], e[:-j]) / T
+        weight = 1.0 - j / (max_lag + 1)   # Bartlett kernel
+        nw_var += 2.0 * weight * gamma_j
+    nw_var = max(nw_var, 1e-10)
+    se_nw = np.sqrt(nw_var / T)
+    return float(mu / se_nw), float(se_nw)
+
+
+def sharpe_bootstrap_ci(returns, n_bootstrap=1000, ci=0.95, annualise=52, seed=42):
+    """
+    Circular block bootstrap confidence interval for the annualised Sharpe Ratio.
+
+    Block bootstrap (Politis & Romano 1994) preserves the autocorrelation
+    structure of weekly returns. Block length b = max(2, floor(T^{1/3})).
+
+    Parameters
+    ----------
+    returns     : array (T,) — weekly long-short returns
+    n_bootstrap : int — bootstrap replications
+    ci          : float — confidence level (0.95 → 95% CI)
+    annualise   : int — annualisation factor (52 for weekly)
+    seed        : int — RNG seed for reproducibility
+
+    Returns
+    -------
+    (lower, upper) : float — CI bounds at level `ci`
+    """
+    T = len(returns)
+    if T < 8:
+        sr = returns.mean() / (returns.std() + 1e-10) * np.sqrt(annualise)
+        return float(sr), float(sr)
+    block_size = max(2, int(T ** (1 / 3)))
+    rng = np.random.default_rng(seed)
+    sr_boots = np.empty(n_bootstrap)
+    for b in range(n_bootstrap):
+        n_blocks = int(np.ceil(T / block_size))
+        starts = rng.integers(0, T, size=n_blocks)
+        sample = np.concatenate([
+            returns[np.arange(s, s + block_size) % T] for s in starts
+        ])[:T]
+        sr_boots[b] = sample.mean() / (sample.std() + 1e-10) * np.sqrt(annualise)
+    alpha = (1.0 - ci) / 2.0
+    return (float(np.percentile(sr_boots, alpha * 100)),
+            float(np.percentile(sr_boots, (1 - alpha) * 100)))
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Portfolio metrics
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -140,12 +219,21 @@ def compute_portfolio_metrics(preds, tgts, msks, annualise=52):
             decile_sr_pw[d] = 0.0
             decile_sr_ew[d] = 0.0
 
+    t_nw_pw, _ = newey_west_tstat(weekly_pw)
+    t_nw_ew, _ = newey_west_tstat(weekly_ew)
+    sr_ci_pw = sharpe_bootstrap_ci(weekly_pw, annualise=annualise)
+    sr_ci_ew = sharpe_bootstrap_ci(weekly_ew, annualise=annualise)
+
     return {
         'mean_pw': mean_pw, 'mean_ew': mean_ew,
         'sr_pw': sr_pw, 'sr_ew': sr_ew,
-        't_pw': t_pw, 'T_weeks': T_weeks,
+        't_pw': t_pw, 't_nw_pw': t_nw_pw, 't_nw_ew': t_nw_ew,
+        'sr_ci_pw': sr_ci_pw, 'sr_ci_ew': sr_ci_ew,
+        'T_weeks': T_weeks,
         'weekly_pw': weekly_pw, 'weekly_ew': weekly_ew,
         'decile_sr_pw': decile_sr_pw, 'decile_sr_ew': decile_sr_ew,
+        # raw predictions stored for transaction cost analysis
+        '_preds': preds, '_tgts': tgts, '_msks': msks,
     }
 
 
@@ -154,25 +242,35 @@ def compute_portfolio_metrics(preds, tgts, msks, annualise=52):
 # ═══════════════════════════════════════════════════════════════════════
 
 def print_table3(all_metrics, model_type):
-    """Print Table 3: Long-short portfolio performance."""
-    print(f"\n{'='*80}")
+    """Print Table 3: Long-short portfolio performance with NW t-stats and bootstrap CIs."""
+    print(f"\n{'='*100}")
     print(f"  Table 3: Long-Short Portfolio Performance — {model_type.upper()} Ensemble")
-    print(f"{'='*80}")
-    header = (f"  {'Info Set':<20s} │ {'mean_PW%':>8s} {'t-stat':>8s} "
-              f"{'SR_PW':>7s} │ {'mean_EW%':>8s} {'SR_EW':>7s} │ {'T':>3s}")
+    print(f"  t_NW = Newey-West HAC t-stat (NW 1994 bandwidth)  |  95% CI = block-bootstrap Sharpe CI")
+    print(f"{'='*100}")
+    header = (f"  {'Info Set':<20s} │ {'mean_PW%':>8s} {'t_NW':>6s} "
+              f"{'SR_PW':>6s} {'95% CI (PW)':>16s} │ "
+              f"{'SR_EW':>6s} {'95% CI (EW)':>16s} │ {'T':>3s}")
     print(header)
-    print(f"  {'─'*72}")
+    print(f"  {'─'*95}")
 
     rows = []
     for name, m in all_metrics.items():
-        row = (f"  {name:<20s} │ {m['mean_pw']:+8.2f} {m['t_pw']:+8.2f} "
-               f"{m['sr_pw']:+7.2f} │ {m['mean_ew']:+8.2f} {m['sr_ew']:+7.2f} │ {m['T_weeks']:3d}")
+        ci_pw = m.get('sr_ci_pw', (float('nan'), float('nan')))
+        ci_ew = m.get('sr_ci_ew', (float('nan'), float('nan')))
+        ci_pw_str = f"[{ci_pw[0]:+.2f},{ci_pw[1]:+.2f}]"
+        ci_ew_str = f"[{ci_ew[0]:+.2f},{ci_ew[1]:+.2f}]"
+        t_nw = m.get('t_nw_pw', m['t_pw'])
+        row = (f"  {name:<20s} │ {m['mean_pw']:+8.2f} {t_nw:+6.2f} "
+               f"{m['sr_pw']:+6.2f} {ci_pw_str:>16s} │ "
+               f"{m['sr_ew']:+6.2f} {ci_ew_str:>16s} │ {m['T_weeks']:3d}")
         print(row)
         rows.append({
             'Information set': name,
             'mean_PW (%)': f"{m['mean_pw']:.2f}",
-            't-stat_PW': f"{m['t_pw']:.2f}",
+            't_NW': f"{t_nw:.2f}",
             'SR_PW': f"{m['sr_pw']:.2f}",
+            'CI_95_lo': f"{ci_pw[0]:.2f}",
+            'CI_95_hi': f"{ci_pw[1]:.2f}",
             'mean_EW (%)': f"{m['mean_ew']:.2f}",
             'SR_EW': f"{m['sr_ew']:.2f}",
             'T (weeks)': str(m['T_weeks']),
@@ -205,6 +303,49 @@ def print_table_a1(all_metrics, model_type):
             print(f" {m['decile_sr_ew'][d]:+6.2f}", end='')
         spread = m['decile_sr_ew'][0] - m['decile_sr_ew'][9]
         print(f" {spread:+7.2f}")
+
+
+def print_subperiod_analysis(all_metrics, model_type, n_windows=4, annualise=52):
+    """
+    Sub-period robustness: split test predictions into n_windows equal sub-periods.
+
+    This is NOT a full walk-forward (models are not retrained per window).
+    It tests whether performance is consistent across different market conditions
+    within the test set — a necessary (though not sufficient) condition for
+    out-of-sample validity.
+
+    Significance: * p<0.10, ** p<0.05, *** p<0.01 (one-sided NW t-test, SR > 0).
+    """
+    print(f"\n{'='*75}")
+    print(f"  Sub-Period Robustness Analysis — {model_type.upper()} ({n_windows} equal windows, PW)")
+    print(f"  Note: models trained once on the fixed train set; test set split post-hoc.")
+    print(f"{'='*75}")
+
+    for name, m in all_metrics.items():
+        weekly_pw = m['weekly_pw']
+        T = len(weekly_pw)
+        window_size = T // n_windows
+        if window_size < 4:
+            print(f"\n  {name}: test period too short ({T} weeks) for {n_windows} sub-windows")
+            continue
+
+        t_nw_full = m.get('t_nw_pw', float('nan'))
+        print(f"\n  {name}  (full test: SR={m['sr_pw']:+.2f}, t_NW={t_nw_full:+.2f}, T={T}):")
+        print(f"    {'Window':<12s} {'Weeks':>5s} {'SR_PW':>7s} {'t_NW':>7s}  Sig")
+        print(f"    {'─'*40}")
+
+        for i in range(n_windows):
+            start = i * window_size
+            end = start + window_size if i < n_windows - 1 else T
+            sub = weekly_pw[start:end]
+            sr = sub.mean() / (sub.std() + 1e-10) * np.sqrt(annualise)
+            t_nw, _ = newey_west_tstat(sub)
+            sig = ('***' if t_nw > 3.09 else
+                   ('** ' if t_nw > 2.33 else
+                    ('*  ' if t_nw > 1.65 else '   ')))
+            print(f"    W{i+1} (w{start+1:02d}–w{end:02d})  {end - start:>5d} {sr:+7.2f} {t_nw:+7.2f}  {sig}")
+
+    print(f"\n  Significance (one-sided): * p<0.10 (t>1.65)  ** p<0.05 (t>2.33)  *** p<0.01 (t>3.09)")
 
 
 def print_comparison_table(all_metrics, model_type):
@@ -341,13 +482,146 @@ def save_csv_tables(all_metrics, model_type, out_dir):
     path = os.path.join(out_dir, f'{model_type}_table3.csv')
     with open(path, 'w', newline='') as f:
         w = csv.writer(f)
-        w.writerow(['Information set', 'mean_PW (%)', 't-stat_PW', 'SR_PW',
-                     'mean_EW (%)', 'SR_EW', 'T (weeks)'])
+        w.writerow(['Information set', 'mean_PW (%)', 't_NW', 'SR_PW',
+                     'CI_95_lo', 'CI_95_hi', 'mean_EW (%)', 'SR_EW', 'T (weeks)'])
         for name, m in all_metrics.items():
-            w.writerow([name, f"{m['mean_pw']:.2f}", f"{m['t_pw']:.2f}",
-                        f"{m['sr_pw']:.2f}", f"{m['mean_ew']:.2f}",
-                        f"{m['sr_ew']:.2f}", m['T_weeks']])
+            t_nw = m.get('t_nw_pw', m['t_pw'])
+            ci = m.get('sr_ci_pw', (float('nan'), float('nan')))
+            w.writerow([name, f"{m['mean_pw']:.2f}", f"{t_nw:.2f}",
+                        f"{m['sr_pw']:.2f}", f"{ci[0]:.2f}", f"{ci[1]:.2f}",
+                        f"{m['mean_ew']:.2f}", f"{m['sr_ew']:.2f}", m['T_weeks']])
     print(f"  Saved: {path}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Transaction cost sensitivity
+# ═══════════════════════════════════════════════════════════════════════
+
+_COST_LEVELS_BPS = [0, 5, 10, 25, 50, 75, 100, 150, 200]
+
+
+def compute_sr_after_costs(preds, tgts, msks, cost_one_way_bps, annualise=52):
+    """
+    Apply one-way transaction costs based on weekly portfolio turnover.
+
+    For an equal-weight long-short decile strategy:
+      - Each week, compare current long (short) decile to previous week's.
+      - Turnover = fraction of positions that change (entered + exited) / 2.
+      - Cost per side per week = turnover × cost_one_way_bps / 10000.
+      - Both long and short sides incur costs independently.
+
+    Parameters
+    ----------
+    cost_one_way_bps : float — one-way cost in basis points (≈ half bid-ask spread)
+
+    Returns
+    -------
+    sr_net  : float — annualised net-of-cost Sharpe Ratio
+    weekly_net : array — weekly net returns after costs
+    avg_turnover : float — average weekly fractional turnover [0, 1]
+    """
+    weekly_net = []
+    turnovers = []
+    prev_long_idx = None
+    prev_short_idx = None
+
+    for t_key in sorted(preds.keys()):
+        pred = preds[t_key]
+        actual = tgts[t_key]
+        mask = msks[t_key]
+
+        if mask.sum() < 10:
+            continue
+
+        p = pred[mask]
+        a = actual[mask]
+        n = len(p)
+        dec = max(1, n // 10)
+
+        order = np.argsort(-p)
+        long_idx = set(order[:dec])
+        short_idx = set(order[-dec:])
+
+        # Gross EW long-short return
+        r_gross = a[order[:dec]].mean() - a[order[-dec:]].mean()
+
+        # Turnover: fraction of portfolio changed (entry + exit / 2*dec)
+        if prev_long_idx is not None:
+            long_chg = len(long_idx.symmetric_difference(prev_long_idx)) / (2 * dec)
+            short_chg = len(short_idx.symmetric_difference(prev_short_idx)) / (2 * dec)
+        else:
+            long_chg = 1.0   # first period: full new position
+            short_chg = 1.0
+
+        # Cost: turnover × cost per unit (long + short sides)
+        cost = (long_chg + short_chg) / 2 * cost_one_way_bps / 10_000
+        weekly_net.append(r_gross - cost)
+        turnovers.append((long_chg + short_chg) / 2)
+
+        prev_long_idx = long_idx
+        prev_short_idx = short_idx
+
+    weekly_net = np.array(weekly_net)
+    sr_net = weekly_net.mean() / (weekly_net.std() + 1e-10) * np.sqrt(annualise)
+    return float(sr_net), weekly_net, float(np.mean(turnovers))
+
+
+def find_breakeven_cost(preds, tgts, msks, annualise=52, max_bps=500):
+    """Binary search for the one-way cost level where net SR = 0."""
+    lo, hi = 0.0, float(max_bps)
+    for _ in range(30):
+        mid = (lo + hi) / 2
+        sr, _, _ = compute_sr_after_costs(preds, tgts, msks, mid, annualise)
+        if sr > 0:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def print_transaction_cost_analysis(all_metrics, model_type, annualise=52):
+    """
+    Print SR sensitivity table across different cost assumptions.
+
+    Typical crypto bid-ask spreads (one-way):
+      BTC/ETH (top tier)  :  1–5 bps
+      Mid-caps            : 10–50 bps
+      Small caps          : 50–200 bps
+      Universe avg (86 coins, rough estimate) : ~20–40 bps
+    """
+    print(f"\n{'='*90}")
+    print(f"  Transaction Cost Sensitivity — {model_type.upper()} (EW long-short)")
+    print(f"  One-way cost = half bid-ask spread.  SR_gross assumes zero cost.")
+    print(f"  Crypto universe avg (86 coins) roughly 20–40 bps one-way.")
+    print(f"{'='*90}")
+
+    for name, m in all_metrics.items():
+        preds = m.get('_preds')
+        tgts_ = m.get('_tgts')
+        msks_ = m.get('_msks')
+        if preds is None:
+            continue   # skip if raw predictions not stored (compare-all mode)
+
+        breakeven = find_breakeven_cost(preds, tgts_, msks_, annualise)
+
+        print(f"\n  {name}  (gross SR_EW = {m['sr_ew']:+.2f}, "
+              f"breakeven ≈ {breakeven:.0f} bps one-way)")
+        print(f"    {'Cost (bps)':>10s} {'SR_net':>8s} {'Δ SR':>8s} {'Avg TO%':>9s}  Status")
+        print(f"    {'─'*52}")
+
+        sr_gross = m['sr_ew']
+        for cost_bps in _COST_LEVELS_BPS:
+            sr_net, _, avg_to = compute_sr_after_costs(
+                preds, tgts_, msks_, cost_bps, annualise
+            )
+            delta = sr_net - sr_gross
+            status = 'break-even' if abs(sr_net) < 0.05 else (
+                'profitable' if sr_net > 0 else 'LOSS')
+            print(f"    {cost_bps:>10d} {sr_net:+8.2f} {delta:+8.2f} "
+                  f"{avg_to * 100:>8.1f}%  {status}")
+
+    print(f"\n  Breakeven cost is the one-way spread at which net SR = 0.")
+    print(f"  Avg TO% = average weekly fraction of portfolio rebalanced.")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -429,7 +703,8 @@ def compare_all_models(cfg):
                     res['ensemble_preds'], res['ensemble_tgts'], res['ensemble_msks']
                 )
                 srs[name] = {'sr_pw': m['sr_pw'], 'sr_ew': m['sr_ew'],
-                             'mean_pw': m['mean_pw'], 't_pw': m['t_pw']}
+                             'mean_pw': m['mean_pw'], 't_pw': m['t_pw'],
+                             't_nw_pw': m.get('t_nw_pw', m['t_pw'])}
             model_srs[model_name] = srs
             available.append(model_name)
         except Exception as e:
@@ -503,6 +778,31 @@ def compare_all_models(cfg):
                 parts.append(f"{'N/A':>8s}")
         print(f"  {' │ '.join(parts)}")
 
+    # Print NW t-stat table
+    print(f"\n{'='*100}")
+    print(f"  Cross-Model Comparison: Newey-West t-statistic (PW, one-sided SR > 0)")
+    print(f"  * p<0.10 (t>1.65)  ** p<0.05 (t>2.33)  *** p<0.01 (t>3.09)")
+    print(f"{'='*100}")
+    header_parts = [f"{'Info Set':<20s}"] + [f"{d:>9s}" for d in disp]
+    print(f"  {' │ '.join(header_parts)}")
+    print(f"  {'─'*(sum(len(p) for p in header_parts) + 3 * (len(header_parts) - 1))}")
+    for feat_name in feat_names_list:
+        parts = [f"{feat_name:<20s}"]
+        for model_name in available:
+            srs_m = model_srs[model_name]
+            if feat_name in srs_m:
+                t_nw = srs_m[feat_name].get('t_nw_pw', float('nan'))
+                if not np.isnan(t_nw):
+                    sig = ('***' if t_nw > 3.09 else
+                           ('** ' if t_nw > 2.33 else
+                            ('*  ' if t_nw > 1.65 else '   ')))
+                    parts.append(f"{t_nw:+6.2f}{sig}")
+                else:
+                    parts.append(f"{'N/A':>9s}")
+            else:
+                parts.append(f"{'N/A':>9s}")
+        print(f"  {' │ '.join(parts)}")
+
     # Save CSV
     out_dir = cfg.get('figure_dir', './outputs')
     os.makedirs(out_dir, exist_ok=True)
@@ -515,9 +815,10 @@ def compare_all_models(cfg):
             if has_vw:
                 header.append('VW_Market_SR')
             header.append('EW_Market_SR')
-        for m in available:
-            header.extend([f'{DISPLAY_NAMES.get(m,m)}_SR_PW',
-                          f'{DISPLAY_NAMES.get(m,m)}_SR_EW'])
+        for mn in available:
+            header.extend([f'{DISPLAY_NAMES.get(mn,mn)}_SR_PW',
+                           f'{DISPLAY_NAMES.get(mn,mn)}_SR_EW',
+                           f'{DISPLAY_NAMES.get(mn,mn)}_t_NW'])
         w.writerow(header)
 
         for feat_name in feat_names_list:
@@ -527,12 +828,13 @@ def compare_all_models(cfg):
                     row.append(f"{float(market['vw_sr']):.3f}")
                 row.append(f"{float(market['ew_sr']):.3f}")
             for model_name in available:
-                srs = model_srs[model_name]
-                if feat_name in srs:
-                    row.extend([f"{srs[feat_name]['sr_pw']:.3f}",
-                               f"{srs[feat_name]['sr_ew']:.3f}"])
+                srs_m = model_srs[model_name]
+                if feat_name in srs_m:
+                    row.extend([f"{srs_m[feat_name]['sr_pw']:.3f}",
+                                f"{srs_m[feat_name]['sr_ew']:.3f}",
+                                f"{srs_m[feat_name].get('t_nw_pw', float('nan')):.2f}"])
                 else:
-                    row.extend(['N/A', 'N/A'])
+                    row.extend(['N/A', 'N/A', 'N/A'])
             w.writerow(row)
     print(f"\n  Saved: {path}")
 
@@ -549,6 +851,10 @@ def main():
     parser.add_argument('--model', default=None)
     parser.add_argument('--compare-all', action='store_true',
                         help='Print cross-model comparison table')
+    parser.add_argument('--walk-forward-windows', type=int, default=4,
+                        help='Number of sub-periods for robustness analysis (default: 4)')
+    parser.add_argument('--no-cost-analysis', action='store_true',
+                        help='Skip transaction cost sensitivity analysis')
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -586,12 +892,17 @@ def main():
     # Print tables
     print_table3(all_metrics, model_type)
     print_table_a1(all_metrics, model_type)
+    print_subperiod_analysis(all_metrics, model_type, n_windows=args.walk_forward_windows)
     print_comparison_table(all_metrics, model_type)
 
     # Print market portfolio if available
     market = load_market_portfolio(cfg['output_dir'])
     if market is not None:
         print_market_portfolio(market)
+
+    # Transaction cost sensitivity
+    if not args.no_cost_analysis:
+        print_transaction_cost_analysis(all_metrics, model_type)
 
     # Generate figures
     print(f"\nGenerating figures...")

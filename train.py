@@ -37,7 +37,7 @@ from models import build_model
 # Ranking loss
 # ═══════════════════════════════════════════════════════════════════════
 
-def listnet_loss(pred, target, mask, temperature=1.0):
+def listnet_loss(pred, target, mask, temperature=1.0, use_rank_norm=True):
     """
     ListNet ranking loss: cross-entropy between softmax distributions.
 
@@ -51,10 +51,11 @@ def listnet_loss(pred, target, mask, temperature=1.0):
 
     Parameters
     ----------
-    pred : Tensor (N,) — model scores for all N assets
-    target : Tensor (N,) — actual returns for all N assets
-    mask : Tensor (N,) bool — valid assets (non-missing targets)
-    temperature : float — softmax temperature (lower = sharper distribution)
+    pred          : Tensor (N,) — model scores for all N assets
+    target        : Tensor (N,) — actual returns for all N assets
+    mask          : Tensor (N,) bool — valid assets (non-missing targets)
+    temperature   : float — softmax temperature (lower = sharper distribution)
+    use_rank_norm : bool — v6 behaviour (True) or v5 raw-return targets (False)
     """
     pred_valid = pred[mask]
     target_valid = target[mask]
@@ -62,9 +63,13 @@ def listnet_loss(pred, target, mask, temperature=1.0):
     if pred_valid.shape[0] < 2:
         return torch.tensor(0.0, device=pred.device, requires_grad=True)
 
-    # Rank-normalize: lowest return → 0.0, highest return → 1.0
-    ranks = torch.argsort(torch.argsort(target_valid)).float()
-    target_norm = ranks / (len(ranks) - 1)
+    if use_rank_norm:
+        # v6: rank-normalize → lowest return = 0.0, highest return = 1.0
+        ranks = torch.argsort(torch.argsort(target_valid)).float()
+        target_norm = ranks / (len(ranks) - 1)
+    else:
+        # v5-equivalent: use raw returns as softmax targets (scale-sensitive)
+        target_norm = target_valid
 
     p_true = F.softmax(target_norm / temperature, dim=0)
     log_p_pred = F.log_softmax(pred_valid / temperature, dim=0)
@@ -163,6 +168,7 @@ def train_one_seed(cfg, data, train_idx, valid_idx, test_idx,
     warmup_epochs = cfg.get('warmup_epochs', 10)
     base_lr = cfg['learning_rate']
     accum_steps = cfg.get('grad_accum_steps', 4)
+    use_rank_norm = cfg.get('use_rank_norm', True)
 
     # Cross-sectional dataset for training (each item = all assets at one time step)
     train_cs = CrossSectionalDataset(data, train_idx, feature_indices, lookback)
@@ -216,7 +222,7 @@ def train_one_seed(cfg, data, train_idx, valid_idx, test_idx,
             asset_idx = asset_idx.to(device)
 
             pred = model(seq, asset_idx)
-            loss = listnet_loss(pred, target, mask, temperature)
+            loss = listnet_loss(pred, target, mask, temperature, use_rank_norm)
             (loss / accum_steps).backward()
             total_loss += loss.item()
 
