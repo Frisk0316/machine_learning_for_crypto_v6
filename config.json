@@ -28,7 +28,7 @@
     "grad_accum_steps": 4,
 
     "num_seeds": 32,
-    "tree_ensemble_seeds": 5,
+    "tree_ensemble_seeds": 32,
 
     "traditional_models": {
         "ols": {},
