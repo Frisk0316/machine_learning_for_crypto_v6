@@ -152,8 +152,8 @@ def main():
         description='Ablation study isolating v5→v6 improvements on LSTM'
     )
     parser.add_argument('--config', default='config.json')
-    parser.add_argument('--seeds', type=int, default=8,
-                        help='Seeds per variant (default: 8; full run uses 32)')
+    parser.add_argument('--seeds', type=int, default=32,
+                        help='Seeds per variant (default: 32)')
     parser.add_argument('--feat', default='Price+Technical',
                         help='Feature set to use (default: Price+Technical)')
     args = parser.parse_args()

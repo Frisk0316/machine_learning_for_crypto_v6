@@ -1,0 +1,50 @@
+Panel: T=324 weeks, N=86 assets
+Trump data available from week 114 (2022-03-13)
+Trump-period training weeks: 112  (2022-03-13 → 2024-04-28)
+Max lags: 4
+
+================================================================================
+  Granger Causality Tests
+  H0: Trump feature t-1 does NOT Granger-cause return t
+  (one-sided: does past Trump activity PREDICT future returns?)
+================================================================================
+
+  Target: Cross-sectional mean return
+    Feature                  F(lag=1)  p(lag=1)  Sig  │   F(best lag)  p(best) best lag
+    ───────────────────────────────────────────────────────────────────────────
+    trump_post_count            1.549    0.2159      │         1.549   0.2159  lag=1
+    trump_caps_ratio            0.002    0.9633      │         0.104   0.9016  lag=2
+    trump_tariff_score          0.021    0.8848      │         0.911   0.4608  lag=4
+    trump_crypto_score          0.222    0.6385      │         0.627   0.5360  lag=2
+    trump_sentiment             0.003    0.9579      │         0.517   0.5976  lag=2
+
+  Target: BTC (index 0)
+    Feature                  F(lag=1)  p(lag=1)  Sig  │   F(best lag)  p(best) best lag
+    ───────────────────────────────────────────────────────────────────────────
+    trump_post_count            3.148    0.0789 *    │         3.319   0.0228  lag=3
+    trump_caps_ratio            2.016    0.1585      │         2.016   0.1585  lag=1
+    trump_tariff_score          0.144    0.7046      │         0.144   0.7046  lag=1
+    trump_crypto_score          0.895    0.3462      │         0.895   0.3462  lag=1
+    trump_sentiment             1.436    0.2334      │         1.712   0.1533  lag=4
+
+  Target: ETH (index 1)
+    Feature                  F(lag=1)  p(lag=1)  Sig  │   F(best lag)  p(best) best lag
+    ───────────────────────────────────────────────────────────────────────────
+    trump_post_count            2.265    0.1353      │         2.265   0.1353  lag=1
+    trump_caps_ratio            0.019    0.8898      │         0.594   0.6679  lag=4
+    trump_tariff_score          0.641    0.4251      │         0.641   0.4251  lag=1
+    trump_crypto_score          1.617    0.2062      │         1.617   0.2062  lag=1
+    trump_sentiment             0.004    0.9486      │         0.360   0.6988  lag=2
+
+  Interpretation:
+  * Reject H0 → Trump feature has predictive power BEYOND past returns.
+    This supports including it as a predictor (leads market, not lags).
+  * Fail to reject → Trump feature may lag rather than lead returns.
+    Raises reverse-causality concern; inclusion may be noise.
+
+  Note: Granger causality ≠ structural causality. Even a leading indicator
+  may reflect shared information (e.g. both Trump tweets and returns react
+  to the same macro event at different speeds).
+
+  Significance: * p<0.10  ** p<0.05  *** p<0.01
+
